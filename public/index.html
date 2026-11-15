@@ -1,13 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <meta name="theme-color" content="#090d18">
+
   <title>Syncbeat - Music Together</title>
+
   <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
+
   <div class="container">
 
     <header>
@@ -15,41 +25,80 @@
       <p>Listen together. Stay in sync.</p>
     </header>
 
+    <!-- Room Section -->
+
     <section class="card" id="roomSection">
+
       <h2>Create a Room</h2>
-      <button id="createBtn">Create Room</button>
+
+      <button id="createBtn">
+        Create Room
+      </button>
 
       <div class="divider">OR</div>
 
       <h2>Join a Room</h2>
+
       <input
         type="text"
         id="roomCode"
         placeholder="Enter room code"
         maxlength="6"
+        autocomplete="off"
       >
-      <button id="joinBtn">Join Room</button>
+
+      <button id="joinBtn">
+        Join Room
+      </button>
+
     </section>
 
+    <!-- Player Section -->
+
     <section class="card hidden" id="playerSection">
-      <h2>Room: <span id="roomDisplay"></span></h2>
+
+      <h2>
+        Room:
+        <span id="roomDisplay"></span>
+      </h2>
+
       <p id="roleDisplay"></p>
-      <p id="memberCount">Devices connected: 1</p>
+
+      <p id="memberCount">
+        Devices connected: 1
+      </p>
+
+      <!-- Admin Controls -->
 
       <div id="adminControls">
+
         <input
           type="text"
           id="youtubeUrl"
           placeholder="Paste YouTube video link"
+          autocomplete="off"
         >
-        <button id="loadBtn">Load Song</button>
+
+        <button id="loadBtn">
+          Load Song
+        </button>
 
         <div class="controls">
-          <button id="playBtn">▶ Play</button>
-          <button id="pauseBtn">⏸ Pause</button>
+
+          <button id="playBtn">
+            ▶ Play
+          </button>
+
+          <button id="pauseBtn">
+            ⏸ Pause
+          </button>
+
         </div>
 
-        <label for="seekBar">Seek</label>
+        <label for="seekBar">
+          Seek
+        </label>
+
         <input
           type="range"
           id="seekBar"
@@ -57,12 +106,34 @@
           max="100"
           value="0"
         >
+
       </div>
 
-      <div id="player"></div>
+      <!-- YouTube Player -->
+
+      <div id="playerContainer">
+
+        <div id="player"></div>
+
+      </div>
+
+      <!-- Listener Playback Permission -->
+
+      <button
+        id="enablePlaybackBtn"
+        class="hidden"
+        type="button"
+      >
+        ▶ Tap to Enable Playback
+      </button>
+
     </section>
 
-    <p id="status">Connecting...</p>
+    <!-- Status -->
+
+    <p id="status">
+      Connecting to Syncbeat...
+    </p>
 
     <footer>
       <p>Syncbeat © 2026</p>
@@ -70,7 +141,14 @@
 
   </div>
 
+  <!-- YouTube API -->
+
   <script src="https://www.youtube.com/iframe_api"></script>
+
+  <!-- Application JavaScript -->
+
   <script src="app.js"></script>
+
 </body>
+
 </html>
