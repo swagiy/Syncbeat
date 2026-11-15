@@ -1,284 +1,265 @@
-const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
-const path = require("path");
-const crypto = require("crypto");
+(function (global) {
+  "use strict";
 
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+  class Syncbeat {
+    constructor({
+      audio,
+      serverUrl,
+      onState,
+      onError,
+      onStatus
+    } = {}) {
+      if (!audio) {
+        throw new Error("Audio element required");
+      }
 
-const rooms = new Map();
+      this.audio = audio;
+      this.serverUrl = serverUrl;
+      this.onState = onState || (() => {});
+      this.onError = onError || console.error;
+      this.onStatus = onStatus || (() => {});
 
-const COMMAND_DELAY = 1500;
+      this.socket = null;
+      this.serverOffsetMs = 0;
+      this.clockSamples = [];
+      this.pendingStartAt = null;
+      this.driftTimer = null;
+      this.syncTimer = null;
+      this.isApplyingCorrection = false;
+    }
 
-app.use((req, res, next) => {
-  res.setHeader(
-    "Referrer-Policy",
-    "strict-origin-when-cross-origin"
-  );
-  next();
-});
+    connect() {
+      if (typeof global.io !== "function") {
+        throw new Error("Socket.IO client missing");
+      }
 
-app.use(express.static(path.join(__dirname, "public")));
+      if (this.socket) return this;
 
-app.get("/health", (req, res) => {
-  res.json({ status: "Syncbeat is running" });
-});
+      this.socket = global.io(this.serverUrl || undefined);
 
-function send(ws, data) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data));
-  }
-}
+      this.socket.on("connect", () => {
+        this.onStatus("connected");
+        this.syncClock();
 
-function broadcast(room, data) {
-  for (const client of room.clients) {
-    send(client, data);
-  }
-}
+        this.syncTimer = setInterval(
+          () => this.syncClock(),
+          10000
+        );
+      });
 
-function getCurrentTime(room) {
-  if (room.playback.state === "playing") {
-    return room.playback.time +
-      (Date.now() - room.playback.updatedAt) / 1000;
-  }
+      this.socket.on("disconnect", () => {
+        this.onStatus("disconnected");
+      });
 
-  return room.playback.time;
-}
+      this.socket.on("app:error", message => {
+        this.onError(message);
+      });
 
-function scheduleCommand(room, command) {
-  const executeAt = Date.now() + COMMAND_DELAY;
+      this.socket.on("room:joined", state => {
+        this.onState(state);
+      });
 
-  broadcast(room, {
-    ...command,
-    executeAt
-  });
+      this.socket.on("room:state", state => {
+        this.onState(state);
 
-  return executeAt;
-}
+        if (state.trackUrl &&
+            this.audio.src !== state.trackUrl) {
+          this.audio.src = state.trackUrl;
+          this.audio.load();
+        }
 
-wss.on("connection", (ws) => {
+        if (state.playback?.status === "playing") {
+          this.correctDrift(state.playback.position);
+        }
+      });
 
-  ws.on("message", (message) => {
-    let data;
+      this.socket.on("track:changed", ({ url }) => {
+        this.audio.src = url;
+        this.audio.load();
+      });
 
-    try {
-      data = JSON.parse(message);
-    } catch {
-      return send(ws, {
-        type: "error",
-        message: "Invalid message"
+      this.socket.on("clock:pong", sample => {
+        this.recordClockSample(sample);
+      });
+
+      this.socket.on("play:scheduled", ({ startAt }) => {
+        this.scheduleStart(startAt);
+      });
+
+      this.socket.on("play:paused", ({ position }) => {
+        this.pendingStartAt = null;
+        this.audio.pause();
+        this.seekSafely(position);
+      });
+
+      this.socket.on("playback:tick", ({ position }) => {
+        this.correctDrift(position);
+      });
+
+      return this;
+    }
+
+    join(roomId, name = "Guest") {
+      if (!this.socket) this.connect();
+
+      this.socket.emit("room:join", {
+        roomId,
+        name
+      });
+
+      return this;
+    }
+
+    setTrack(url) {
+      this.socket.emit("track:set", { url });
+      return this;
+    }
+
+    setReady(ready = true) {
+      this.socket.emit("client:ready", { ready });
+      return this;
+    }
+
+    play() {
+      this.socket.emit("play:request");
+      return this;
+    }
+
+    pause() {
+      this.socket.emit("pause:request");
+      return this;
+    }
+
+    syncClock() {
+      if (!this.socket?.connected) return;
+
+      this.socket.emit("clock:ping", {
+        clientSentAt: Date.now()
       });
     }
 
-    // CLOCK SYNCHRONIZATION
+    recordClockSample(sample) {
+      const receivedAt = Date.now();
+      const rtt = receivedAt - sample.clientSentAt;
 
-    if (data.type === "ping") {
-      return send(ws, {
-        type: "pong",
-        clientSentAt: data.clientSentAt,
-        serverTime: Date.now()
-      });
+      const offset =
+        ((sample.serverReceivedAt + sample.serverSentAt) / 2) -
+        ((sample.clientSentAt + receivedAt) / 2);
+
+      this.clockSamples.push({ rtt, offset });
+      this.clockSamples = this.clockSamples.slice(-12);
+
+      const best = [...this.clockSamples]
+        .sort((a, b) => a.rtt - b.rtt)
+        .slice(0, 5);
+
+      this.serverOffsetMs =
+        best.reduce((sum, item) => sum + item.offset, 0) /
+        best.length;
     }
 
-    // CREATE ROOM
+    serverNow() {
+      return Date.now() + this.serverOffsetMs;
+    }
 
-    if (data.type === "create") {
-      const code = crypto.randomBytes(3)
-        .toString("hex")
-        .toUpperCase();
+    scheduleStart(startAt) {
+      this.pendingStartAt = startAt;
 
-      const room = {
-        admin: ws,
-        clients: new Set([ws]),
-        videoId: null,
-        playback: {
-          state: "paused",
-          time: 0,
-          updatedAt: Date.now()
+      const waitMs = Math.max(
+        0,
+        startAt - this.serverNow()
+      );
+
+      setTimeout(async () => {
+        if (this.pendingStartAt !== startAt) return;
+
+        const lateBy = Math.max(
+          0,
+          (this.serverNow() - startAt) / 1000
+        );
+
+        this.seekSafely(lateBy);
+
+        try {
+          await this.audio.play();
+          this.onStatus("playing");
+        } catch (error) {
+          this.onError("Tap Play on this device to allow playback.");
+        }
+
+        this.pendingStartAt = null;
+      }, waitMs);
+    }
+
+    correctDrift(targetPosition) {
+      if (!Number.isFinite(targetPosition)) return;
+      if (this.pendingStartAt) return;
+      if (this.audio.paused) return;
+
+      const drift =
+        targetPosition - this.audio.currentTime;
+
+      const absDrift = Math.abs(drift);
+
+      if (absDrift > 0.45) {
+        this.seekSafely(targetPosition);
+
+      } else if (absDrift > 0.08) {
+        this.isApplyingCorrection = true;
+
+        this.audio.playbackRate =
+          drift > 0 ? 1.04 : 0.96;
+
+        clearTimeout(this.driftTimer);
+
+        this.driftTimer = setTimeout(() => {
+          this.audio.playbackRate = 1;
+          this.isApplyingCorrection = false;
+        }, 1200);
+
+      } else if (!this.isApplyingCorrection) {
+        this.audio.playbackRate = 1;
+      }
+    }
+
+    seekSafely(seconds) {
+      if (!Number.isFinite(seconds) || seconds < 0) return;
+
+      const apply = () => {
+        if (Number.isFinite(this.audio.duration)) {
+          this.audio.currentTime = Math.min(
+            seconds,
+            Math.max(0, this.audio.duration - 0.05)
+          );
+        } else {
+          this.audio.currentTime = seconds;
         }
       };
 
-      rooms.set(code, room);
-
-      ws.roomCode = code;
-      ws.isAdmin = true;
-
-      return send(ws, {
-        type: "created",
-        code,
-        admin: true
-      });
+      if (this.audio.readyState >= 1) {
+        apply();
+      } else {
+        this.audio.addEventListener(
+          "loadedmetadata",
+          apply,
+          { once: true }
+        );
+      }
     }
 
-    // JOIN ROOM
+    disconnect() {
+      clearInterval(this.syncTimer);
+      clearTimeout(this.driftTimer);
 
-    if (data.type === "join") {
-      const code = String(data.code || "")
-        .trim()
-        .toUpperCase();
-
-      const room = rooms.get(code);
-
-      if (!room) {
-        return send(ws, {
-          type: "error",
-          message: "Room not found"
-        });
+      if (this.socket) {
+        this.socket.disconnect();
+        this.socket = null;
       }
 
-      room.clients.add(ws);
-
-      ws.roomCode = code;
-      ws.isAdmin = false;
-
-      send(ws, {
-        type: "joined",
-        code,
-        admin: false
-      });
-
-      send(ws, {
-        type: "room_state",
-        videoId: room.videoId,
-        state: room.playback.state,
-        time: getCurrentTime(room),
-        serverTime: Date.now()
-      });
-
-      broadcast(room, {
-        type: "members",
-        count: room.clients.size
-      });
-
-      return;
+      this.onStatus("disconnected");
     }
+  }
 
-    const room = rooms.get(ws.roomCode);
+  global.Syncbeat = Syncbeat;
 
-    if (!room || !ws.isAdmin) {
-      return send(ws, {
-        type: "error",
-        message: "Only admin can control playback"
-      });
-    }
-
-    // LOAD VIDEO
-
-    if (data.type === "load") {
-      const videoId = String(data.videoId || "");
-
-      if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
-        return send(ws, {
-          type: "error",
-          message: "Invalid YouTube video ID"
-        });
-      }
-
-      room.videoId = videoId;
-
-      room.playback = {
-        state: "paused",
-        time: 0,
-        updatedAt: Date.now()
-      };
-
-      broadcast(room, {
-        type: "load",
-        videoId
-      });
-
-      return;
-    }
-
-    // PLAY
-
-    if (data.type === "play") {
-      const time = Math.max(
-        0,
-        Number(data.time) || 0
-      );
-
-      const executeAt = scheduleCommand(room, {
-        type: "play",
-        time
-      });
-
-      room.playback = {
-        state: "playing",
-        time,
-        updatedAt: executeAt
-      };
-
-      return;
-    }
-
-    // PAUSE
-
-    if (data.type === "pause") {
-      const time =
-  getCurrentTime(room) + COMMAND_DELAY / 1000;
-
-      const executeAt = scheduleCommand(room, {
-        type: "pause",
-        time
-      });
-
-      room.playback = {
-        state: "paused",
-        time,
-        updatedAt: executeAt
-      };
-
-      return;
-    }
-
-    // SEEK
-
-    if (data.type === "seek") {
-      const time = Math.max(
-        0,
-        Number(data.time) || 0
-      );
-
-      const executeAt = scheduleCommand(room, {
-        type: "seek",
-        time
-      });
-
-      room.playback.time = time;
-      room.playback.updatedAt = executeAt;
-    }
-
-  });
-
-  ws.on("close", () => {
-    const room = rooms.get(ws.roomCode);
-
-    if (!room) return;
-
-    room.clients.delete(ws);
-
-    if (room.admin === ws) {
-      broadcast(room, {
-        type: "room_closed"
-      });
-
-      rooms.delete(ws.roomCode);
-      return;
-    }
-
-    broadcast(room, {
-      type: "members",
-      count: room.clients.size
-    });
-  });
-
-});
-
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Syncbeat running on port ${PORT}`);
-});
+})(window);
