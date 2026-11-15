@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Syncbeat - Music Together</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <div class="container">
+
+    <header>
+      <h1>🎵 Syncbeat</h1>
+      <p>Listen together. Stay in sync.</p>
+    </header>
+
+    <section class="card" id="roomSection">
+      <h2>Create a Room</h2>
+      <button id="createBtn">Create Room</button>
+
+      <div class="divider">OR</div>
+
+      <h2>Join a Room</h2>
+      <input
+        type="text"
+        id="roomCode"
+        placeholder="Enter room code"
+        maxlength="6"
+      >
+      <button id="joinBtn">Join Room</button>
+    </section>
+
+    <section class="card hidden" id="playerSection">
+      <h2>Room: <span id="roomDisplay"></span></h2>
+      <p id="roleDisplay"></p>
+      <p id="memberCount">Devices connected: 1</p>
+
+      <div id="adminControls">
+        <input
+          type="text"
+          id="youtubeUrl"
+          placeholder="Paste YouTube video link"
+        >
+        <button id="loadBtn">Load Song</button>
+
+        <div class="controls">
+          <button id="playBtn">▶ Play</button>
+          <button id="pauseBtn">⏸ Pause</button>
+        </div>
+
+        <label for="seekBar">Seek</label>
+        <input
+          type="range"
+          id="seekBar"
+          min="0"
+          max="100"
+          value="0"
+        >
+      </div>
+
+      <div id="player"></div>
+    </section>
+
+    <p id="status">Connecting...</p>
+
+    <footer>
+      <p>Syncbeat © 2026</p>
+    </footer>
+
+  </div>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="app.js"></script>
+</body>
+</html>
