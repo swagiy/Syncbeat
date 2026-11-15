@@ -1,52 +1,96 @@
-const statusText = document.getElementById("status");
-const createBtn = document.getElementById("createBtn");
-const joinBtn = document.getElementById("joinBtn");
-const roomInput = document.getElementById("roomCode");
+const $ = (id) => document.getElementById(id);
 
-const roomSection = document.getElementById("roomSection");
-const playerSection = document.getElementById("playerSection");
+const statusText = $("status");
+const createBtn = $("createBtn");
+const joinBtn = $("joinBtn");
+const roomInput = $("roomCode");
 
-const roomDisplay = document.getElementById("roomDisplay");
-const roleDisplay = document.getElementById("roleDisplay");
-const memberCount = document.getElementById("memberCount");
+const roomSection = $("roomSection");
+const playerSection = $("playerSection");
 
-const adminControls = document.getElementById("adminControls");
-const youtubeUrl = document.getElementById("youtubeUrl");
+const roomDisplay = $("roomDisplay");
+const roleDisplay = $("roleDisplay");
+const memberCount = $("memberCount");
 
-const loadBtn = document.getElementById("loadBtn");
-const playBtn = document.getElementById("playBtn");
-const pauseBtn = document.getElementById("pauseBtn");
-const seekBar = document.getElementById("seekBar");
+const adminControls = $("adminControls");
+const youtubeUrl = $("youtubeUrl");
+
+const loadBtn = $("loadBtn");
+const playBtn = $("playBtn");
+const pauseBtn = $("pauseBtn");
+const seekBar = $("seekBar");
+
+const enablePlaybackBtn = $("enablePlaybackBtn");
 
 let socket;
+let player = null;
+
 let isAdmin = false;
-let player;
+let inRoom = false;
 let playerReady = false;
+let youtubeApiReady = false;
+
+let currentVideoId = null;
+let desiredTime = 0;
+let desiredState = "paused";
+
 let pendingVideoId = null;
+let startAfterCue = false;
 
-const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+const protocol =
+  location.protocol === "https:" ? "wss:" : "ws:";
 
-socket = new WebSocket(`${protocol}//${location.host}`);
+socket = new WebSocket(
+  `${protocol}//${location.host}`
+);
 
 socket.onopen = () => {
   statusText.textContent = "Connected to Syncbeat";
+
+  createBtn.disabled = false;
+  joinBtn.disabled = false;
 };
 
 socket.onclose = () => {
-  statusText.textContent = "Disconnected from server";
+  statusText.textContent = "Server disconnected";
 };
 
 socket.onerror = () => {
   statusText.textContent = "Connection error";
 };
 
+createBtn.disabled = true;
+joinBtn.disabled = true;
+
 function send(data) {
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(data));
-  } else {
-    statusText.textContent = "Server is not connected";
+  if (socket.readyState !== WebSocket.OPEN) {
+    statusText.textContent = "Server not connected";
+    return;
   }
+
+  socket.send(JSON.stringify(data));
 }
+
+// LOAD YOUTUBE API ONLY AFTER CALLBACK IS READY
+
+window.onYouTubeIframeAPIReady = () => {
+  youtubeApiReady = true;
+
+  if (inRoom) {
+    createPlayer();
+  }
+};
+
+const youtubeScript = document.createElement("script");
+
+youtubeScript.src =
+  "https://www.youtube.com/iframe_api";
+
+youtubeScript.async = true;
+
+document.head.appendChild(youtubeScript);
+
+// ROOM FUNCTIONS
 
 createBtn.onclick = () => {
   send({ type: "create" });
@@ -56,7 +100,7 @@ joinBtn.onclick = () => {
   const code = roomInput.value.trim().toUpperCase();
 
   if (!code) {
-    statusText.textContent = "Enter a room code";
+    statusText.textContent = "Enter room code";
     return;
   }
 
@@ -66,184 +110,64 @@ joinBtn.onclick = () => {
   });
 };
 
-socket.onmessage = (event) => {
-  const data = JSON.parse(event.data);
+function enterRoom(data) {
+  isAdmin = data.admin;
+  inRoom = true;
 
-  if (data.type === "created" || data.type === "joined") {
-    isAdmin = data.admin;
+  roomDisplay.textContent = data.code;
 
-    roomDisplay.textContent = data.code;
-    roleDisplay.textContent = isAdmin
-      ? "You are the Admin"
-      : "You are a Listener";
+  roleDisplay.textContent = isAdmin
+    ? "You are the Admin"
+    : "You are a Listener";
 
-    adminControls.style.display = isAdmin ? "block" : "none";
+  adminControls.style.display =
+    isAdmin ? "block" : "none";
 
-    roomSection.classList.add("hidden");
-    playerSection.classList.remove("hidden");
+  roomSection.classList.add("hidden");
+  playerSection.classList.remove("hidden");
 
-    statusText.textContent = "Room connected";
-  }
+  statusText.textContent = "Room connected";
 
-  if (data.type === "members") {
-    memberCount.textContent =
-      `Devices connected: ${data.count}`;
-  }
-
-  if (data.type === "load") {
-    loadVideo(data.videoId);
-  }
-
-  if (data.type === "play") {
-    syncPlay(data.time);
-  }
-
-  if (data.type === "pause") {
-    if (playerReady) {
-      player.pauseVideo();
-    }
-  }
-
-  if (data.type === "seek") {
-    if (playerReady) {
-      player.seekTo(data.time, true);
-    }
-  }
-
-  if (data.type === "room_closed") {
-    statusText.textContent = "Admin closed the room";
-    playerSection.classList.add("hidden");
-    roomSection.classList.remove("hidden");
-  }
-
-  if (data.type === "error") {
-    statusText.textContent = data.message;
-  }
-};
-
-function extractVideoId(url) {
-  try {
-    const parsed = new URL(url);
-
-    if (parsed.hostname.includes("youtu.be")) {
-      return parsed.pathname.slice(1);
-    }
-
-    if (parsed.searchParams.get("v")) {
-      return parsed.searchParams.get("v");
-    }
-
-    const parts = parsed.pathname.split("/");
-
-    if (
-      ["embed", "shorts", "live"].includes(parts[1])
-    ) {
-      return parts[2];
-    }
-
-    return null;
-  } catch {
-    return null;
+  if (youtubeApiReady) {
+    createPlayer();
   }
 }
 
-loadBtn.onclick = () => {
-  if (!isAdmin) return;
+// CREATE PLAYER ONLY WHEN ROOM IS VISIBLE
 
-  const videoId = extractVideoId(youtubeUrl.value.trim());
-
-  if (!videoId) {
-    statusText.textContent = "Enter a valid YouTube link";
+function createPlayer() {
+  if (player || !youtubeApiReady || !inRoom) {
     return;
   }
 
-  loadVideo(videoId);
-
-  send({
-    type: "load",
-    videoId
-  });
-};
-
-function loadVideo(videoId) {
-  if (!playerReady) {
-    pendingVideoId = videoId;
-    return;
-  }
-
-  player.loadVideoById(videoId);
-  statusText.textContent = "Loading song...";
-}
-
-playBtn.onclick = () => {
-  if (!isAdmin || !playerReady) return;
-
-  const time = player.getCurrentTime();
-
-  player.playVideo();
-
-  send({
-    type: "play",
-    time
-  });
-};
-
-pauseBtn.onclick = () => {
-  if (!isAdmin || !playerReady) return;
-
-  player.pauseVideo();
-
-  send({
-    type: "pause"
-  });
-};
-
-seekBar.addEventListener("change", () => {
-  if (!isAdmin || !playerReady) return;
-
-  const duration = player.getDuration();
-  const time = duration * (Number(seekBar.value) / 100);
-
-  player.seekTo(time, true);
-
-  send({
-    type: "seek",
-    time
-  });
-});
-
-function syncPlay(time) {
-  if (!playerReady) return;
-
-  if (typeof time === "number") {
-    player.seekTo(time, true);
-  }
-
-  player.playVideo();
-}
-
-window.onYouTubeIframeAPIReady = function () {
   player = new YT.Player("player", {
-    height: "225",
     width: "100%",
-    videoId: "",
+    height: "100%",
+
     playerVars: {
       playsinline: 1,
-      controls: 1,
-      rel: 0
+      controls: 0,
+      rel: 0,
+      origin: location.origin
     },
+
     events: {
       onReady: () => {
         playerReady = true;
 
+        statusText.textContent =
+          "YouTube player ready";
+
         if (pendingVideoId) {
-          loadVideo(pendingVideoId);
+          cueVideo(pendingVideoId);
           pendingVideoId = null;
         }
       },
 
       onStateChange: (event) => {
+
         if (event.data === YT.PlayerState.PLAYING) {
+          enablePlaybackBtn.classList.add("hidden");
           statusText.textContent = "Playing";
         }
 
@@ -251,13 +175,312 @@ window.onYouTubeIframeAPIReady = function () {
           statusText.textContent = "Paused";
         }
 
+        if (event.data === YT.PlayerState.CUED) {
+          statusText.textContent = "Song ready";
+
+          if (startAfterCue) {
+            startAfterCue = false;
+            attemptPlay();
+          }
+        }
+
+        if (event.data === YT.PlayerState.BUFFERING) {
+          statusText.textContent = "Buffering...";
+        }
+
         if (event.data === YT.PlayerState.ENDED) {
           statusText.textContent = "Song ended";
         }
+      },
+
+      onError: (event) => {
+        const messages = {
+          2: "Invalid YouTube video ID",
+          5: "HTML5 player error",
+          100: "Video unavailable or private",
+          101: "Video owner does not allow embedding",
+          150: "Video owner does not allow embedding",
+          153: "YouTube cannot identify the website. Check Referer Policy."
+        };
+
+        const message =
+          messages[event.data] ||
+          `YouTube player error: ${event.data}`;
+
+        statusText.textContent = message;
+
+        console.error("YouTube error:", event.data);
+      },
+
+      onAutoplayBlocked: () => {
+        enablePlaybackBtn.classList.remove("hidden");
+
+        statusText.textContent =
+          "Playback blocked. Tap the green button to play.";
       }
     }
   });
+}
+
+// VIDEO URL HANDLING
+
+function extractVideoId(value) {
+  value = value.trim();
+
+  if (/^[a-zA-Z0-9_-]{11}$/.test(value)) {
+    return value;
+  }
+
+  try {
+    const url = new URL(value);
+
+    let id = null;
+
+    if (
+      url.hostname === "youtu.be" ||
+      url.hostname.endsWith(".youtu.be")
+    ) {
+      id = url.pathname.split("/")[1];
+    } else if (
+      url.hostname.includes("youtube.com")
+    ) {
+      id = url.searchParams.get("v");
+
+      if (!id) {
+        const parts = url.pathname.split("/");
+
+        if (
+          ["embed", "shorts", "live"].includes(parts[1])
+        ) {
+          id = parts[2];
+        }
+      }
+    }
+
+    return id && /^[a-zA-Z0-9_-]{11}$/.test(id)
+      ? id
+      : null;
+
+  } catch {
+    return null;
+  }
+}
+
+// LOAD VIDEO WITHOUT AUTOPLAY
+
+function cueVideo(videoId) {
+  currentVideoId = videoId;
+  desiredState = "paused";
+  desiredTime = 0;
+
+  if (!playerReady) {
+    pendingVideoId = videoId;
+    return;
+  }
+
+  player.cueVideoById({
+    videoId,
+    startSeconds: 0
+  });
+
+  statusText.textContent = "Loading video...";
+}
+
+// ADMIN LOAD
+
+loadBtn.onclick = () => {
+  if (!isAdmin) return;
+
+  const videoId = extractVideoId(youtubeUrl.value);
+
+  if (!videoId) {
+    statusText.textContent =
+      "Enter a valid YouTube link";
+    return;
+  }
+
+  cueVideo(videoId);
+
+  send({
+    type: "load",
+    videoId
+  });
 };
+
+// ADMIN PLAY
+
+playBtn.onclick = () => {
+  if (!isAdmin || !playerReady) return;
+
+  desiredTime = player.getCurrentTime();
+  desiredState = "playing";
+
+  player.playVideo();
+
+  send({
+    type: "play",
+    time: desiredTime
+  });
+};
+
+// ADMIN PAUSE
+
+pauseBtn.onclick = () => {
+  if (!isAdmin || !playerReady) return;
+
+  desiredTime = player.getCurrentTime();
+  desiredState = "paused";
+
+  player.pauseVideo();
+
+  send({
+    type: "pause",
+    time: desiredTime
+  });
+};
+
+// ADMIN SEEK
+
+seekBar.addEventListener("change", () => {
+  if (!isAdmin || !playerReady) return;
+
+  const duration = player.getDuration();
+
+  if (!duration) return;
+
+  desiredTime =
+    duration * Number(seekBar.value) / 100;
+
+  player.seekTo(desiredTime, true);
+
+  send({
+    type: "seek",
+    time: desiredTime
+  });
+});
+
+// REMOTE PLAY
+
+function attemptPlay() {
+  if (!playerReady) return;
+
+  player.seekTo(desiredTime, true);
+  player.playVideo();
+}
+
+// LISTENER MANUAL PLAY BUTTON
+
+enablePlaybackBtn.onclick = () => {
+  if (!playerReady) {
+    statusText.textContent =
+      "YouTube player is still loading";
+    return;
+  }
+
+  player.seekTo(desiredTime, true);
+  player.playVideo();
+
+  statusText.textContent =
+    "Starting playback...";
+};
+
+// SERVER MESSAGES
+
+socket.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+
+  if (data.type === "created" ||
+      data.type === "joined") {
+    enterRoom(data);
+    return;
+  }
+
+  if (data.type === "members") {
+    memberCount.textContent =
+      `Devices connected: ${data.count}`;
+    return;
+  }
+
+  if (data.type === "load") {
+    cueVideo(data.videoId);
+    return;
+  }
+
+  if (data.type === "room_state") {
+
+    if (data.videoId) {
+      currentVideoId = data.videoId;
+      desiredTime = Number(data.time) || 0;
+      desiredState = data.state || "paused";
+
+      if (playerReady) {
+        cueVideo(data.videoId);
+
+        if (desiredState === "playing") {
+          startAfterCue = true;
+        }
+      } else {
+        pendingVideoId = data.videoId;
+
+        if (desiredState === "playing") {
+          startAfterCue = true;
+        }
+      }
+    }
+
+    return;
+  }
+
+  if (data.type === "play") {
+    desiredTime = Number(data.time) || 0;
+    desiredState = "playing";
+
+    if (playerReady) {
+      attemptPlay();
+    }
+
+    return;
+  }
+
+  if (data.type === "pause") {
+    desiredTime = Number(data.time) || 0;
+    desiredState = "paused";
+
+    if (playerReady) {
+      player.seekTo(desiredTime, true);
+      player.pauseVideo();
+    }
+
+    return;
+  }
+
+  if (data.type === "seek") {
+    desiredTime = Number(data.time) || 0;
+
+    if (playerReady) {
+      player.seekTo(desiredTime, true);
+    }
+
+    return;
+  }
+
+  if (data.type === "room_closed") {
+    statusText.textContent = "Admin closed the room";
+
+    inRoom = false;
+
+    playerSection.classList.add("hidden");
+    roomSection.classList.remove("hidden");
+
+    return;
+  }
+
+  if (data.type === "error") {
+    statusText.textContent = data.message;
+  }
+};
+
+// UPDATE SEEK BAR
 
 setInterval(() => {
   if (
@@ -266,6 +489,7 @@ setInterval(() => {
     player.getPlayerState() === YT.PlayerState.PLAYING
   ) {
     seekBar.value =
-      (player.getCurrentTime() / player.getDuration()) * 100;
+      player.getCurrentTime() /
+      player.getDuration() * 100;
   }
 }, 1000);
