@@ -217,7 +217,8 @@ wss.on("connection", (ws) => {
     // PAUSE
 
     if (data.type === "pause") {
-      const time = getCurrentTime(room);
+      const time =
+  getCurrentTime(room) + COMMAND_DELAY / 1000;
 
       const executeAt = scheduleCommand(room, {
         type: "pause",
