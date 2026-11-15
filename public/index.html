@@ -4,12 +4,13 @@
 <head>
   <meta charset="UTF-8">
 
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
-  >
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0">
 
   <meta name="theme-color" content="#090d18">
+
+  <meta name="referrer"
+    content="strict-origin-when-cross-origin">
 
   <title>Syncbeat - Music Together</title>
 
@@ -24,8 +25,6 @@
       <h1>🎵 Syncbeat</h1>
       <p>Listen together. Stay in sync.</p>
     </header>
-
-    <!-- Room Section -->
 
     <section class="card" id="roomSection">
 
@@ -44,7 +43,6 @@
         id="roomCode"
         placeholder="Enter room code"
         maxlength="6"
-        autocomplete="off"
       >
 
       <button id="joinBtn">
@@ -53,13 +51,10 @@
 
     </section>
 
-    <!-- Player Section -->
-
     <section class="card hidden" id="playerSection">
 
       <h2>
-        Room:
-        <span id="roomDisplay"></span>
+        Room: <span id="roomDisplay"></span>
       </h2>
 
       <p id="roleDisplay"></p>
@@ -68,15 +63,12 @@
         Devices connected: 1
       </p>
 
-      <!-- Admin Controls -->
-
       <div id="adminControls">
 
         <input
           type="text"
           id="youtubeUrl"
-          placeholder="Paste YouTube video link"
-          autocomplete="off"
+          placeholder="Paste YouTube link"
         >
 
         <button id="loadBtn">
@@ -95,9 +87,7 @@
 
         </div>
 
-        <label for="seekBar">
-          Seek
-        </label>
+        <label for="seekBar">Seek</label>
 
         <input
           type="range"
@@ -109,30 +99,21 @@
 
       </div>
 
-      <!-- YouTube Player -->
-
       <div id="playerContainer">
-
         <div id="player"></div>
-
       </div>
-
-      <!-- Listener Playback Permission -->
 
       <button
         id="enablePlaybackBtn"
         class="hidden"
-        type="button"
       >
-        ▶ Tap to Enable Playback
+        ▶ Tap to Play / Sync
       </button>
 
     </section>
 
-    <!-- Status -->
-
     <p id="status">
-      Connecting to Syncbeat...
+      Connecting...
     </p>
 
     <footer>
@@ -141,14 +122,8 @@
 
   </div>
 
-  <!-- YouTube API -->
-
-  <script src="https://www.youtube.com/iframe_api"></script>
-
-  <!-- Application JavaScript -->
-
+  <!-- app.js loads the YouTube API after setting its callback -->
   <script src="app.js"></script>
 
 </body>
-
 </html>
