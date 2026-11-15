@@ -10,7 +10,8 @@ const wss = new WebSocket.Server({ server });
 
 const rooms = new Map();
 
-// YouTube requires a valid referrer for embedded playback.
+const COMMAND_DELAY = 1500;
+
 app.use((req, res, next) => {
   res.setHeader(
     "Referrer-Policy",
@@ -31,11 +32,9 @@ function send(ws, data) {
   }
 }
 
-function broadcast(room, data, except = null) {
+function broadcast(room, data) {
   for (const client of room.clients) {
-    if (client !== except) {
-      send(client, data);
-    }
+    send(client, data);
   }
 }
 
@@ -46,6 +45,17 @@ function getCurrentTime(room) {
   }
 
   return room.playback.time;
+}
+
+function scheduleCommand(room, command) {
+  const executeAt = Date.now() + COMMAND_DELAY;
+
+  broadcast(room, {
+    ...command,
+    executeAt
+  });
+
+  return executeAt;
 }
 
 wss.on("connection", (ws) => {
@@ -59,6 +69,16 @@ wss.on("connection", (ws) => {
       return send(ws, {
         type: "error",
         message: "Invalid message"
+      });
+    }
+
+    // CLOCK SYNCHRONIZATION
+
+    if (data.type === "ping") {
+      return send(ws, {
+        type: "pong",
+        clientSentAt: data.clientSentAt,
+        serverTime: Date.now()
       });
     }
 
@@ -123,7 +143,8 @@ wss.on("connection", (ws) => {
         type: "room_state",
         videoId: room.videoId,
         state: room.playback.state,
-        time: getCurrentTime(room)
+        time: getCurrentTime(room),
+        serverTime: Date.now()
       });
 
       broadcast(room, {
@@ -174,19 +195,21 @@ wss.on("connection", (ws) => {
     // PLAY
 
     if (data.type === "play") {
-      const time = Math.max(0, Number(data.time) || 0);
+      const time = Math.max(
+        0,
+        Number(data.time) || 0
+      );
+
+      const executeAt = scheduleCommand(room, {
+        type: "play",
+        time
+      });
 
       room.playback = {
         state: "playing",
         time,
-        updatedAt: Date.now()
+        updatedAt: executeAt
       };
-
-      broadcast(room, {
-        type: "play",
-        time,
-        updatedAt: Date.now()
-      });
 
       return;
     }
@@ -196,16 +219,16 @@ wss.on("connection", (ws) => {
     if (data.type === "pause") {
       const time = getCurrentTime(room);
 
-      room.playback = {
-        state: "paused",
-        time,
-        updatedAt: Date.now()
-      };
-
-      broadcast(room, {
+      const executeAt = scheduleCommand(room, {
         type: "pause",
         time
       });
+
+      room.playback = {
+        state: "paused",
+        time,
+        updatedAt: executeAt
+      };
 
       return;
     }
@@ -213,15 +236,18 @@ wss.on("connection", (ws) => {
     // SEEK
 
     if (data.type === "seek") {
-      const time = Math.max(0, Number(data.time) || 0);
+      const time = Math.max(
+        0,
+        Number(data.time) || 0
+      );
 
-      room.playback.time = time;
-      room.playback.updatedAt = Date.now();
-
-      broadcast(room, {
+      const executeAt = scheduleCommand(room, {
         type: "seek",
         time
       });
+
+      room.playback.time = time;
+      room.playback.updatedAt = executeAt;
     }
 
   });
@@ -239,7 +265,6 @@ wss.on("connection", (ws) => {
       });
 
       rooms.delete(ws.roomCode);
-
       return;
     }
 
