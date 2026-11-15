@@ -31,11 +31,18 @@ let playerReady = false;
 let youtubeApiReady = false;
 
 let currentVideoId = null;
+
 let desiredTime = 0;
 let desiredState = "paused";
 
 let pendingVideoId = null;
-let startAfterCue = false;
+let pendingAction = null;
+
+let clockOffset = 0;
+let clockSynced = false;
+
+let commandTimer = null;
+let pendingStart = false;
 
 const protocol =
   location.protocol === "https:" ? "wss:" : "ws:";
@@ -44,11 +51,15 @@ socket = new WebSocket(
   `${protocol}//${location.host}`
 );
 
+// CONNECTION
+
 socket.onopen = () => {
   statusText.textContent = "Connected to Syncbeat";
 
   createBtn.disabled = false;
   joinBtn.disabled = false;
+
+  startClockSync();
 };
 
 socket.onclose = () => {
@@ -71,7 +82,28 @@ function send(data) {
   socket.send(JSON.stringify(data));
 }
 
-// LOAD YOUTUBE API ONLY AFTER CALLBACK IS READY
+// CLOCK SYNCHRONIZATION
+
+function serverNow() {
+  return Date.now() + clockOffset;
+}
+
+function startClockSync() {
+  syncClock();
+
+  setInterval(syncClock, 2000);
+}
+
+function syncClock() {
+  if (socket.readyState !== WebSocket.OPEN) return;
+
+  send({
+    type: "ping",
+    clientSentAt: Date.now()
+  });
+}
+
+// YOUTUBE API
 
 window.onYouTubeIframeAPIReady = () => {
   youtubeApiReady = true;
@@ -133,7 +165,7 @@ function enterRoom(data) {
   }
 }
 
-// CREATE PLAYER ONLY WHEN ROOM IS VISIBLE
+// CREATE PLAYER
 
 function createPlayer() {
   if (player || !youtubeApiReady || !inRoom) {
@@ -159,8 +191,15 @@ function createPlayer() {
           "YouTube player ready";
 
         if (pendingVideoId) {
-          cueVideo(pendingVideoId);
+          const id = pendingVideoId;
           pendingVideoId = null;
+          cueVideo(id);
+        }
+
+        if (pendingAction) {
+          const action = pendingAction;
+          pendingAction = null;
+          scheduleAction(action);
         }
       },
 
@@ -178,9 +217,10 @@ function createPlayer() {
         if (event.data === YT.PlayerState.CUED) {
           statusText.textContent = "Song ready";
 
-          if (startAfterCue) {
-            startAfterCue = false;
-            attemptPlay();
+          if (pendingAction) {
+            const action = pendingAction;
+            pendingAction = null;
+            scheduleAction(action);
           }
         }
 
@@ -200,14 +240,12 @@ function createPlayer() {
           100: "Video unavailable or private",
           101: "Video owner does not allow embedding",
           150: "Video owner does not allow embedding",
-          153: "YouTube cannot identify the website. Check Referer Policy."
+          153: "YouTube cannot identify this website"
         };
 
-        const message =
+        statusText.textContent =
           messages[event.data] ||
-          `YouTube player error: ${event.data}`;
-
-        statusText.textContent = message;
+          `YouTube error: ${event.data}`;
 
         console.error("YouTube error:", event.data);
       },
@@ -216,13 +254,13 @@ function createPlayer() {
         enablePlaybackBtn.classList.remove("hidden");
 
         statusText.textContent =
-          "Playback blocked. Tap the green button to play.";
+          "Playback blocked. Tap to enable playback.";
       }
     }
   });
 }
 
-// VIDEO URL HANDLING
+// VIDEO URL
 
 function extractVideoId(value) {
   value = value.trim();
@@ -236,14 +274,9 @@ function extractVideoId(value) {
 
     let id = null;
 
-    if (
-      url.hostname === "youtu.be" ||
-      url.hostname.endsWith(".youtu.be")
-    ) {
+    if (url.hostname.includes("youtu.be")) {
       id = url.pathname.split("/")[1];
-    } else if (
-      url.hostname.includes("youtube.com")
-    ) {
+    } else if (url.hostname.includes("youtube.com")) {
       id = url.searchParams.get("v");
 
       if (!id) {
@@ -266,12 +299,13 @@ function extractVideoId(value) {
   }
 }
 
-// LOAD VIDEO WITHOUT AUTOPLAY
+// LOAD VIDEO
 
 function cueVideo(videoId) {
   currentVideoId = videoId;
-  desiredState = "paused";
+
   desiredTime = 0;
+  desiredState = "paused";
 
   if (!playerReady) {
     pendingVideoId = videoId;
@@ -307,20 +341,92 @@ loadBtn.onclick = () => {
   });
 };
 
+// SCHEDULE COMMAND
+
+function scheduleAction(data) {
+  if (!playerReady) {
+    pendingAction = data;
+    return;
+  }
+
+  if (commandTimer) {
+    clearTimeout(commandTimer);
+    commandTimer = null;
+  }
+
+  const executeAt = Number(data.executeAt) || serverNow();
+
+  const delay = Math.max(
+    0,
+    executeAt - serverNow()
+  );
+
+  commandTimer = setTimeout(() => {
+    executeCommand(data);
+  }, delay);
+}
+
+// EXECUTE COMMAND
+
+function executeCommand(data) {
+  if (!playerReady) {
+    pendingAction = data;
+    return;
+  }
+
+  const type = data.type;
+
+  if (type === "play") {
+    const elapsed = Math.max(
+      0,
+      (serverNow() - Number(data.executeAt)) / 1000
+    );
+
+    const targetTime =
+      Number(data.time || 0) + elapsed;
+
+    desiredTime = targetTime;
+    desiredState = "playing";
+
+    player.seekTo(targetTime, true);
+    player.playVideo();
+
+    return;
+  }
+
+  if (type === "pause") {
+    desiredTime = Number(data.time) || 0;
+    desiredState = "paused";
+
+    player.seekTo(desiredTime, true);
+    player.pauseVideo();
+
+    return;
+  }
+
+  if (type === "seek") {
+    desiredTime = Number(data.time) || 0;
+
+    player.seekTo(desiredTime, true);
+
+    return;
+  }
+}
+
 // ADMIN PLAY
 
 playBtn.onclick = () => {
   if (!isAdmin || !playerReady) return;
 
-  desiredTime = player.getCurrentTime();
-  desiredState = "playing";
-
-  player.playVideo();
+  const time = player.getCurrentTime();
 
   send({
     type: "play",
-    time: desiredTime
+    time
   });
+
+  statusText.textContent =
+    "Play command scheduled...";
 };
 
 // ADMIN PAUSE
@@ -328,15 +434,15 @@ playBtn.onclick = () => {
 pauseBtn.onclick = () => {
   if (!isAdmin || !playerReady) return;
 
-  desiredTime = player.getCurrentTime();
-  desiredState = "paused";
-
-  player.pauseVideo();
+  const time = player.getCurrentTime();
 
   send({
     type: "pause",
-    time: desiredTime
+    time
   });
+
+  statusText.textContent =
+    "Pause command scheduled...";
 };
 
 // ADMIN SEEK
@@ -348,37 +454,29 @@ seekBar.addEventListener("change", () => {
 
   if (!duration) return;
 
-  desiredTime =
+  const time =
     duration * Number(seekBar.value) / 100;
-
-  player.seekTo(desiredTime, true);
 
   send({
     type: "seek",
-    time: desiredTime
+    time
   });
+
+  statusText.textContent =
+    "Seek command scheduled...";
 });
 
-// REMOTE PLAY
-
-function attemptPlay() {
-  if (!playerReady) return;
-
-  player.seekTo(desiredTime, true);
-  player.playVideo();
-}
-
-// LISTENER MANUAL PLAY BUTTON
+// LISTENER MANUAL PLAY
 
 enablePlaybackBtn.onclick = () => {
-  if (!playerReady) {
-    statusText.textContent =
-      "YouTube player is still loading";
-    return;
-  }
+  if (!playerReady) return;
 
-  player.seekTo(desiredTime, true);
+  const time = desiredTime;
+
+  player.seekTo(time, true);
   player.playVideo();
+
+  enablePlaybackBtn.classList.add("hidden");
 
   statusText.textContent =
     "Starting playback...";
@@ -389,83 +487,126 @@ enablePlaybackBtn.onclick = () => {
 socket.onmessage = (event) => {
   const data = JSON.parse(event.data);
 
-  if (data.type === "created" ||
-      data.type === "joined") {
+  // CLOCK RESPONSE
+
+  if (data.type === "pong") {
+    const receivedAt = Date.now();
+
+    const sentAt = Number(data.clientSentAt);
+    const serverTime = Number(data.serverTime);
+
+    const midpoint = (sentAt + receivedAt) / 2;
+
+    const newOffset = serverTime - midpoint;
+
+    if (!clockSynced) {
+      clockOffset = newOffset;
+      clockSynced = true;
+    } else {
+      clockOffset =
+        clockOffset * 0.8 +
+        newOffset * 0.2;
+    }
+
+    return;
+  }
+
+  // ROOM CREATED OR JOINED
+
+  if (
+    data.type === "created" ||
+    data.type === "joined"
+  ) {
     enterRoom(data);
     return;
   }
 
+  // MEMBERS
+
   if (data.type === "members") {
     memberCount.textContent =
       `Devices connected: ${data.count}`;
+
     return;
   }
+
+  // LOAD VIDEO
 
   if (data.type === "load") {
+    pendingAction = null;
+
+    if (commandTimer) {
+      clearTimeout(commandTimer);
+      commandTimer = null;
+    }
+
     cueVideo(data.videoId);
+
     return;
   }
 
+  // ROOM STATE
+
   if (data.type === "room_state") {
+    if (!data.videoId) return;
 
-    if (data.videoId) {
-      currentVideoId = data.videoId;
-      desiredTime = Number(data.time) || 0;
-      desiredState = data.state || "paused";
+    currentVideoId = data.videoId;
 
-      if (playerReady) {
-        cueVideo(data.videoId);
+    desiredTime = Number(data.time) || 0;
+    desiredState = data.state || "paused";
 
-        if (desiredState === "playing") {
-          startAfterCue = true;
-        }
-      } else {
-        pendingVideoId = data.videoId;
+    const elapsed = Math.max(
+      0,
+      (serverNow() - Number(data.serverTime)) / 1000
+    );
 
-        if (desiredState === "playing") {
-          startAfterCue = true;
-        }
+    if (desiredState === "playing") {
+      desiredTime += elapsed;
+    }
+
+    pendingVideoId = data.videoId;
+
+    if (playerReady) {
+      cueVideo(data.videoId);
+
+      if (desiredState === "playing") {
+        pendingAction = {
+          type: "play",
+          time: desiredTime,
+          executeAt: serverNow() + 500
+        };
       }
     }
 
     return;
   }
 
+  // PLAY
+
   if (data.type === "play") {
-    desiredTime = Number(data.time) || 0;
-    desiredState = "playing";
-
-    if (playerReady) {
-      attemptPlay();
-    }
-
+    scheduleAction(data);
     return;
   }
+
+  // PAUSE
 
   if (data.type === "pause") {
-    desiredTime = Number(data.time) || 0;
-    desiredState = "paused";
-
-    if (playerReady) {
-      player.seekTo(desiredTime, true);
-      player.pauseVideo();
-    }
-
+    scheduleAction(data);
     return;
   }
+
+  // SEEK
 
   if (data.type === "seek") {
-    desiredTime = Number(data.time) || 0;
-
-    if (playerReady) {
-      player.seekTo(desiredTime, true);
-    }
-
+    scheduleAction(data);
     return;
   }
 
+  // ROOM CLOSED
+
   if (data.type === "room_closed") {
-    statusText.textContent = "Admin closed the room";
+    statusText.textContent =
+      "Admin closed the room";
 
     inRoom = false;
 
@@ -474,6 +615,8 @@ socket.onmessage = (event) => {
 
     return;
   }
+
+  // ERROR
 
   if (data.type === "error") {
     statusText.textContent = data.message;
